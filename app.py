@@ -375,23 +375,27 @@ def dashboard():
             st.dataframe(pd.DataFrame(hrows), use_container_width=True, hide_index=True)
 
     with tabs[3]:
-        selected = st.selectbox("选择板块", rank["板块"].tolist())
-        row = rank[rank["板块"] == selected].iloc[0]
-        code = row["代码"]
-        d = add_indicators(histories[code]).tail(100)
-        fig = go.Figure()
-        fig.add_trace(go.Candlestick(x=d.date, open=d.open, high=d.high, low=d.low, close=d.close, name="K线"))
-        for n in (5, 10, 20):
-            fig.add_trace(go.Scatter(x=d.date, y=d[f"ma{n}"], mode="lines", name=f"MA{n}"))
-        fig.update_layout(height=520, xaxis_rangeslider_visible=False, margin=dict(l=5, r=5, t=10, b=5), legend_orientation="h")
-        st.plotly_chart(fig, use_container_width=True)
-        q1, q2, q3, q4, q5 = st.columns(5)
-        q1.metric("趋势", int(row["趋势"]))
-        q2.metric("量能", int(row["量能"]))
-        q3.metric("强度", int(row["强度"]))
-        q4.metric("风险安全", int(row["风险"]))
-        q5.metric("市场", int(row["市场"]))
-        st.info(row["系统判断"])
+        available = rank[rank["代码"].isin(histories.keys())]
+        if available.empty:
+            st.warning("当前没有成功加载的K线数据。系统不会再报错；请稍后刷新或等待备用数据源恢复。")
+        else:
+            selected = st.selectbox("选择板块", available["板块"].tolist())
+            row = available[available["板块"] == selected].iloc[0]
+            code = row["代码"]
+            d = add_indicators(histories[code]).tail(100)
+            fig = go.Figure()
+            fig.add_trace(go.Candlestick(x=d.date, open=d.open, high=d.high, low=d.low, close=d.close, name="K线"))
+            for n in (5, 10, 20):
+                fig.add_trace(go.Scatter(x=d.date, y=d[f"ma{n}"], mode="lines", name=f"MA{n}"))
+            fig.update_layout(height=520, xaxis_rangeslider_visible=False, margin=dict(l=5, r=5, t=10, b=5), legend_orientation="h")
+            st.plotly_chart(fig, use_container_width=True)
+            q1, q2, q3, q4, q5 = st.columns(5)
+            q1.metric("趋势", int(row["趋势"]))
+            q2.metric("量能", int(row["量能"]))
+            q3.metric("强度", int(row["强度"]))
+            q4.metric("风险安全", int(row["风险"]))
+            q5.metric("市场", int(row["市场"]))
+            st.info(row["系统判断"])
 
     with tabs[4]:
         st.markdown(

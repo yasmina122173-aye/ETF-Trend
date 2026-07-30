@@ -12,6 +12,10 @@ try:
     import akshare as ak
 except Exception:
     ak = None
+try:
+    import yfinance as yf
+except Exception:
+    yf = None
 
 
 @dataclass
@@ -26,34 +30,59 @@ class ScoreResult:
     reason: str
 
 
-def fetch_etf_history(code: str, days: int = 180) -> pd.DataFrame:
-    """Fetch daily ETF bars from Eastmoney through AkShare."""
-    if not code or len(str(code).strip()) != 6:
-        raise ValueError("ETF代码必须是6位数字")
-    if ak is None:
-        raise RuntimeError("未安装 AkShare")
-    df = ak.fund_etf_hist_em(
-        symbol=str(code).strip(),
-        period="daily",
-        start_date="20200101",
-        end_date=datetime.now().strftime("%Y%m%d"),
-        adjust="qfq",
-    )
+def _yf_symbol(code: str) -> str:
+    code = str(code).strip().zfill(6)
+    return f"{code}.SS" if code.startswith(("5", "6", "9")) else f"{code}.SZ"
+
+
+def _normalise_history(df: pd.DataFrame, days: int) -> pd.DataFrame:
     if df is None or df.empty:
-        raise RuntimeError(f"未获取到 {code} 的行情")
+        raise RuntimeError("未获取到历史行情")
+    df = df.copy()
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df = df.reset_index()
     rename = {
+        "Date": "date", "Datetime": "date", "Open": "open", "High": "high",
+        "Low": "low", "Close": "close", "Volume": "volume",
         "日期": "date", "开盘": "open", "收盘": "close", "最高": "high",
         "最低": "low", "成交量": "volume", "成交额": "amount", "涨跌幅": "pct_change",
     }
     df = df.rename(columns=rename)
-    keep = [c for c in ["date", "open", "high", "low", "close", "volume", "amount", "pct_change"] if c in df.columns]
+    if "date" not in df.columns or "close" not in df.columns:
+        raise RuntimeError("历史行情字段异常")
+    if "amount" not in df.columns:
+        df["amount"] = np.nan
+    if "pct_change" not in df.columns:
+        df["pct_change"] = pd.to_numeric(df["close"], errors="coerce").pct_change() * 100
+    keep = ["date", "open", "high", "low", "close", "volume", "amount", "pct_change"]
+    for c in keep:
+        if c not in df.columns:
+            df[c] = np.nan
     df = df[keep].copy()
-    df["date"] = pd.to_datetime(df["date"])
-    for c in ["open", "high", "low", "close", "volume", "amount", "pct_change"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-    return df.dropna(subset=["close"]).sort_values("date").tail(days).reset_index(drop=True)
+    df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.tz_localize(None)
+    for c in keep[1:]:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df.dropna(subset=["date", "close"]).sort_values("date").tail(days).reset_index(drop=True)
 
+
+def fetch_etf_history(code: str, days: int = 180) -> pd.DataFrame:
+    """历史行情：优先 AkShare，失败时自动切换 Yahoo Finance。"""
+    code = str(code).strip().zfill(6)
+    errors = []
+    if ak is not None:
+        try:
+            df = ak.fund_etf_hist_em(symbol=code, period="daily", start_date="20200101", end_date=datetime.now().strftime("%Y%m%d"), adjust="qfq")
+            return _normalise_history(df, days)
+        except Exception as exc:
+            errors.append(f"AkShare: {exc}")
+    if yf is not None:
+        try:
+            df = yf.download(_yf_symbol(code), period="1y", interval="1d", auto_adjust=False, progress=False, threads=False, timeout=12)
+            return _normalise_history(df, days)
+        except Exception as exc:
+            errors.append(f"Yahoo: {exc}")
+    raise RuntimeError("；".join(errors) or "没有可用行情源")
 
 def add_indicators(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
@@ -194,27 +223,61 @@ def latest_snapshot(df: pd.DataFrame) -> dict:
     }
 
 
-def fetch_etf_spot() -> pd.DataFrame:
-    """Fetch current intraday quotes for all exchange-traded ETFs."""
-    if ak is None:
-        raise RuntimeError("未安装 AkShare")
-    df = ak.fund_etf_spot_em()
-    if df is None or df.empty:
-        raise RuntimeError("未获取到ETF实时行情")
-    rename = {
-        "代码": "code", "名称": "name", "最新价": "close", "涨跌幅": "pct_change",
-        "开盘价": "open", "最高价": "high", "最低价": "low", "昨收": "prev_close",
-        "成交量": "volume", "成交额": "amount", "更新时间": "quote_time",
-    }
-    df = df.rename(columns=rename).copy()
-    if "code" not in df.columns:
-        raise RuntimeError("实时行情字段发生变化：缺少代码列")
-    df["code"] = df["code"].astype(str).str.zfill(6)
-    for c in ["close", "pct_change", "open", "high", "low", "prev_close", "volume", "amount"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
-    return df
+ETF_UNIVERSE = {
+    "510300": "沪深300ETF", "513180": "恒生科技ETF华夏", "515170": "食品饮料ETF华夏",
+    "159625": "绿色电力ETF嘉实", "515220": "煤炭ETF国泰", "512400": "有色金属ETF",
+    "512480": "半导体ETF", "561700": "电网设备ETF", "561160": "锂电池ETF",
+    "159930": "能源ETF",
+}
 
+
+def fetch_etf_spot() -> pd.DataFrame:
+    """实时行情：优先 AkShare；失败时用 Yahoo 5分钟行情覆盖默认观察池。"""
+    if ak is not None:
+        try:
+            df = ak.fund_etf_spot_em()
+            if df is not None and not df.empty:
+                rename = {
+                    "代码": "code", "名称": "name", "最新价": "close", "涨跌幅": "pct_change",
+                    "开盘价": "open", "最高价": "high", "最低价": "low", "昨收": "prev_close",
+                    "成交量": "volume", "成交额": "amount", "更新时间": "quote_time",
+                }
+                df = df.rename(columns=rename).copy()
+                df["code"] = df["code"].astype(str).str.zfill(6)
+                for c in ["close", "pct_change", "open", "high", "low", "prev_close", "volume", "amount"]:
+                    if c in df.columns:
+                        df[c] = pd.to_numeric(df[c], errors="coerce")
+                return df
+        except Exception:
+            pass
+    if yf is None:
+        raise RuntimeError("AkShare不可用，且未安装 yfinance 备用源")
+    rows = []
+    for code, name in ETF_UNIVERSE.items():
+        try:
+            t = yf.Ticker(_yf_symbol(code))
+            d = t.history(period="5d", interval="5m", auto_adjust=False)
+            if d is None or d.empty:
+                continue
+            d = d.dropna(subset=["Close"])
+            last = d.iloc[-1]
+            day = d.index[-1].date()
+            today = d[d.index.date == day]
+            prev_close = float(d["Close"].iloc[-2]) if len(d) > 1 else float(last["Close"])
+            close = float(last["Close"])
+            rows.append({
+                "code": code, "name": name, "close": close,
+                "pct_change": (close / prev_close - 1) * 100 if prev_close else np.nan,
+                "open": float(today["Open"].iloc[0]), "high": float(today["High"].max()),
+                "low": float(today["Low"].min()), "prev_close": prev_close,
+                "volume": float(today["Volume"].sum()), "amount": np.nan,
+                "quote_time": str(d.index[-1]),
+            })
+        except Exception:
+            continue
+    if not rows:
+        raise RuntimeError("主数据源与备用数据源均不可用")
+    return pd.DataFrame(rows)
 
 def merge_intraday_quote(history: pd.DataFrame, quote: pd.Series | dict) -> pd.DataFrame:
     """Replace/add today's daily bar with the latest intraday quote for provisional scoring."""
