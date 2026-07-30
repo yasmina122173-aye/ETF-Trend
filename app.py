@@ -36,12 +36,16 @@ h1,h2,h3{letter-spacing:-.02em}
 .muted{opacity:.68;font-size:13px}
 .pill{display:inline-block;padding:5px 10px;border-radius:999px;font-size:12px;font-weight:700;background:rgba(45,125,255,.15);margin-right:6px}
 .good{background:rgba(30,190,110,.14)} .warn{background:rgba(255,180,40,.15)} .danger{background:rgba(255,70,70,.13)}
+.total-score{padding:18px 20px;border-radius:20px;background:linear-gradient(135deg,rgba(45,125,255,.22),rgba(122,87,255,.14));border:1px solid rgba(127,127,127,.18);display:flex;justify-content:space-between;align-items:center;gap:16px;margin:16px 0 12px}
+.total-score-number{font-size:52px;font-weight:900;line-height:1}
+.total-score-label{font-size:14px;opacity:.72}
 .score-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin:14px 0}
 .score-box{padding:14px;border-radius:16px;border:1px solid rgba(127,127,127,.16);background:rgba(127,127,127,.06)}
 .score-name{font-size:13px;opacity:.72}.score-value{font-size:30px;font-weight:800;margin:3px 0}.score-note{font-size:12px;opacity:.72;line-height:1.4}
 @media(max-width:720px){
  .block-container{padding-left:.8rem;padding-right:.8rem;padding-top:.5rem}
  .hero{padding:18px;border-radius:20px}.card{padding:15px;border-radius:18px}
+ .total-score{padding:16px}.total-score-number{font-size:44px}
  .score-grid{grid-template-columns:1fr 1fr}.score-box:last-child{grid-column:1/-1}
 }
 </style>
@@ -279,6 +283,14 @@ def dashboard():
             st.plotly_chart(fig,use_container_width=True)
 
             notes=score_explanations(row,hist,benchmark)
+            total_score=int(row["总分"])
+            total_tag,total_cls=level(total_score,100)
+            st.markdown(f"""<div class="total-score">
+            <div><div class="total-score-label">综合总分</div><div style="font-size:20px;font-weight:800;margin-top:5px">{row['板块']}</div>
+            <div style="margin-top:9px"><span class="pill {total_cls}">{total_tag}</span></div></div>
+            <div style="text-align:right"><div class="total-score-number">{total_score}</div><div class="total-score-label">满分 100</div></div>
+            </div>""",unsafe_allow_html=True)
+
             labels=[("趋势",int(row["趋势"]),40,notes[0]),("量能",int(row["量能"]),20,notes[1]),
                     ("强度",int(row["强度"]),20,notes[2]),("风险安全",int(row["风险"]),10,notes[3]),
                     ("市场",int(row["市场"]),10,notes[4])]
